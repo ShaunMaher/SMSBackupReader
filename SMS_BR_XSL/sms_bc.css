@@ -1,0 +1,119 @@
+/*****************************************************************************
+Copyright (c) 2010, BlueChip, Cyborg Systems
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+******************************************************************************
+v1.3  Release
+*****************************************************************************/
+
+body {  /* main page */
+   background-color:#000000;
+   font-family:arial,sans-serif;
+   font-size:1em;
+   color:#ffffff;
+   width:600px;
+   margin:0 auto 0 auto;
+}
+
+   label.theme {  /* "Theme" selector label */
+     font-size:1em;
+     color:#aaa
+   }
+   div.theme {  /* Theme list box */
+      position:absolute;
+      font-size:0.6em;
+      color:#999;
+      z-index:100;
+      right:5px; top:4px;
+   }
+
+   div.name {  /* Name banner */
+      margin-bottom:4px;
+      border:3px groove #808080;
+      background-color:#0000ff;
+      font-weight:bold;
+      white-space:nowrap;
+      padding:4px 0 3px 6px;
+   }
+      div.unknown {  /* Unknown contact */
+         color:#ffffff;
+         text-align:left;
+      }
+      div.contact {  /* Contact name */
+         color:#ffffff;
+         text-align:left;
+         float:left;
+      }
+      div.number {  /* Number for known contact */
+         color:#808080;
+         padding-right:8px;
+         text-align:right;
+      }
+
+   div.msg {  /* Message bubble */
+      padding:4px 4px 4px 4px;
+      text-align:left;
+   }
+
+   div.sent {  /* Sent message bubble */
+      background-color:#101010;
+   }
+      font.sent {  /* Sent message text */
+         color:#00ff00;
+         font-size:0.8em;
+      }
+      font.me {  /* "Me: " */
+         font-weight:bold;
+         padding-right:8px;
+      }
+
+   div.rcvd {  /* Received message bubble */
+      background-color:#000022;
+   }
+      font.rcvd {  /* Received message text */
+         color:#ffff00;
+      }
+      font.you {  /* "You: " */
+         font-weight:bold;
+         padding-right:8px;
+      }
+
+   div.drft {  /* Draft message bubble */
+      background-color:#222200;
+   }
+      font.drft {  /* Draft message text */
+         color:#ffffff;
+      }
+
+   div.footer {  /* Message footer */
+      padding:4px 4px 4px 4px;
+      margin-bottom:4px;
+      text-align:right;
+      font-size:0.6em;
+   }
+      font.saved {  /* "draft saved" message */
+         color:#ffff00;
+      }
+      font.date {  /* Date string */
+         color:#00ffff;
+      }
+
+   div.break {  /* Spacer */
+      padding:0 0 25px 0;
+   }
