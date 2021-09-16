@@ -6,11 +6,13 @@
 #    from pip: yq
 
 output=1
+force=0
 
-while getopts "vd" opt; do
+while getopts "fdv" opt; do
   case $opt in
     v) output=$(( $output + 1 )) ;;
     d) output=5 ;;
+    f) force=1 ;;
     *) usage "-${option} and ${OPTARG}" ;;
   esac
 done
@@ -97,6 +99,8 @@ if [ ! -f "${database_file}" ]; then
     sqlite3 "${database_file}"
   echo "CREATE TABLE state(version INTEGER, name TEXT, value TEXT)" | \
     sqlite3 "${database_file}"
+  echo "CREATE TABLE contacts(version INTEGER, name TEXT, value TEXT)" | \
+    sqlite3 "${database_file}"
 fi
 
 my_intl_code=$(config_get "my_intl_code")
@@ -113,11 +117,23 @@ normalize_number () {
 }
 
 parse () {
-  echo "Parsing file ${in_file}"
-  sms_count=$(cat "${in_file}" | xmlstarlet sel -t -v "count(/smses/sms)" 2>/dev/null)
+  in_file_full=$(readlink -f "${1}")
+  in_file_name=$(basename "${in_file_full}")
+
+  sql_count="SELECT COUNT(*) FROM state WHERE (name = 'parsed_file' AND value = '${in_file_full}');"
+  existing_count=$(echo "${sql_count}" | sqlite3 "${database_file}")
+  if [ $existing_count -gt 0 ]; then
+    if [ $force -eq 0 ]; then
+      echo "Skipping '${in_file_name}' as it has been parsed previously.  Add '-f' to the command line to force re-parsing."
+      return
+    fi
+  fi
+
+  echo "Parsing file ${in_file_name}"
+  sms_count=$(cat "${in_file_full}" | xmlstarlet sel -t -v "count(/smses/sms)" 2>/dev/null)
   echo "Processing $sms_count SMS messages"
   for (( i=1; i<=$sms_count; i++ )); do
-    message=$(cat "${in_file}" | xmlstarlet sel -t -c "/smses/sms[$i]" 2>/dev/null)
+    message=$(cat "${in_file_full}" | xmlstarlet sel -t -c "/smses/sms[$i]" 2>/dev/null)
     safe_json=$(printf "${message}" | xq | sed "s/'/\&#39;/g")
     message_date=$(echo "${safe_json}" | jq -r '.sms["@date"]' | awk '{print int($1/1000)}')
     sender=$(echo "${safe_json}" | jq -r '.sms["@address"]')
@@ -132,10 +148,10 @@ parse () {
     fi
   done
 
-  mms_count=$(cat "${in_file}" | xmlstarlet sel -t -v "count(/smses/mms)" "${in_file}" 2>/dev/null)
+  mms_count=$(cat "${in_file_full}" | xmlstarlet sel -t -v "count(/smses/mms)" 2>/dev/null)
   echo "Processing ${mms_count} MMS messages"
   for (( i=1; i<=$mms_count; i++ )); do
-    message=$(cat "${in_file}" | xmlstarlet sel -t -c "/smses/mms[$i]" 2>/dev/null)
+    message=$(cat "${in_file_full}" | xmlstarlet sel -t -c "/smses/mms[$i]" 2>/dev/null)
     images=$(echo "${message}" | xmlstarlet sel -t -v "count(/mms/parts/part[@ct=\"image/jpeg\"])" 2>/dev/null)
     echo "  Extracting $images image(s) from message"
     for (( p=1; p<=$images; p++ )); do
@@ -166,31 +182,191 @@ parse () {
       fi
     done
   done
+  sql_insert="INSERT INTO state VALUES ("$(date +%s)", 'parsed_file', '${in_file_full}');"
+  echo "${sql_insert}" | sqlite3 "${database_file}"
+}
+
+# A rather inellegant way of convincing the "date" utility to give us the
+#  unixtime that a given month started
+month_start () {
+  local return=$(date --date="$(date --date="@${1}" "+1-%b-%Y 00:00:00")" +%s)
+  echo $return
+}
+
+# A rather inellegant way of convincing the "date" utility to give us the
+#  unixtime that a given month ends using a loop to slowly feel our way towards
+#  the month end.
+month_end () {
+  local this_month=$(date --date="@${1}" "+%b")
+  local next_month="${this_month}"
+  local i=$1
+  while [ "${next_month}" == "${this_month}" ]; do
+    i=$(( $i + 86400 ))
+    next_month=$(date --date="@${i}" "+%b")
+    #echo ${next_month}
+  done
+  next_month=$(month_start $i)
+  echo $(( ${next_month} - 1 ))
+}
+
+# Still inellegant.  Work out the start and end times of all the months within
+#  a given date range
+generate_months () {
+  local return=""
+  local this_month=$(date --date="@${1}" "+%B %Y")
+  local next_month="${this_month}"
+  local i=$1
+  echo "$(month_start $i)|$(month_end $i)|${next_month}"
+  while [ $i -lt $2 ]; do
+    while [ "${next_month}" == "${this_month}" ]; do
+      i=$(( $i + 86400 ))
+      next_month=$(date --date="@${i}" "+%B %Y")
+      #echo ${next_month}
+    done
+    if [ $i -lt $2 ]; then
+      echo "$(month_start $i)|$(month_end $i)|${next_month}"
+    fi
+
+    i=$(( $i + 86400 ))
+    this_month=$(date --date="@${i}" "+%B %Y")
+    local next_month="${this_month}"
+  done
+}
+
+message_to_html () {
+  local message_json="${1}"
+  local type=$(echo "${message_json}" | jq -r 'keys_unsorted[]')
+  case $type in
+    "mms") return=$(mms_to_html "${message_json}") ;;
+    "sms") return=$(sms_to_html "${message_json}") ;;
+  esac
+  echo "${return}"
+}
+
+mms_to_html () {
+  local message_json="${1}"
+  local message_date=$(date --date="@$(echo "${message_json}" | jq -r '.mms["@date"]' | awk '{print int($1/1000)}')")
+  local message_body=$(echo "${message_json}" | jq -r '.mms.parts[] | map(select(.["@ct"] | match("text/plain"))) | map(.["@text"]) | .[]')
+  readarray -t images < <(echo "${message_json}" | jq -r '.mms.parts[] | map(select(.["@ct"] | match("image/jpeg"))) | map(.["@data"]) | .[]')
+  for image in "${images[@]}"; do
+    if [ ! "${message_body}" == "" ]; then message_body="${message_body}<br/>"; fi
+    message_body="${message_body}<img src=\"../example-data/attachments/${image}\"/><br/>"
+  done
+  local sender_friendly_name="MMS: Contacts not yet implemented"
+  local sender_number=$(normalize_number $(echo "${message_json}" | jq -r '.sms["@address"]'))
+
+  #echo "<div class=\"message\"><div class=\"message_header\">SMS: ${message_date}</div><div class=\"message_body\">" >>"${export_file}"
+  #echo "<pre>${message_json}</pre>" >>"${export_file}"
+  #echo "</div></div>" >>"${export_file}"
+
+  cat "themes/${template_name}/mms_message.html" | \
+    message_date="${message_date}" \
+    message_body="${message_body}" \
+    message_json="${message_json}" \
+    message_type="${message_type}" \
+    sender_friendly_name="${sender_friendly_name}" \
+    sender_number="${sender_number}" \
+    envsubst
+}
+
+sms_to_html () {
+  local message_json="${1}"
+  local message_date=$(date --date="@$(echo "${message_json}" | jq -r '.sms["@date"]' | awk '{print int($1/1000)}')")
+  local message_body=$(echo "${message_json}" | jq -r '.sms["@body"]' | awk '{print $0"<br/>"}')
+  local message_type="type"$(echo "${message_json}" | jq -r '.sms["@type"]')
+  local sender_friendly_name="SMS: Contacts not yet implemented"
+  local sender_number=$(normalize_number $(echo "${message_json}" | jq -r '.sms["@address"]'))
+
+  #echo "<div class=\"message\"><div class=\"message_header\">SMS: ${message_date}</div><div class=\"message_body\">" >>"${export_file}"
+  #echo "<pre>${message_json}</pre>" >>"${export_file}"
+  #echo "</div></div>" >>"${export_file}"
+
+  cat "themes/${template_name}/sms_message.html" | \
+    message_date="${message_date}" \
+    message_body="${message_body}" \
+    message_json="${message_json}" \
+    message_type="${message_type}" \
+    sender_friendly_name="${sender_friendly_name}" \
+    sender_number="${sender_number}" \
+    envsubst
+}
+
+sql_query() {
+  local query=$(echo "${1}" | envsubst)
+  if [ $output -gt 3 ]; then echo "sql_query: '${query}'" 1>&2; fi
+  return=$(echo "${query}" | sqlite3 "${database_file}")
+  if [ $output -gt 4 ]; then echo "sql_query: '${query}' returned '${return}'" 1>&2; fi
+  echo "${return}"
 }
 
 generate_html () {
+  template_name=$(sql_query "SELECT value FROM config WHERE name = 'template_name' ORDER BY version DESC LIMIT 1;")
+  if [ "${template_name}" == "" ]; then
+    echo "No template configured.  Using 'default' template." 1>&2
+    template_name="default"
+    sql_query "INSERT INTO config VALUES ("$(date +%s)", 'template_name', 'default');"
+  fi
+  if [ $output -gt 1 ]; then echo "Template Name: ${template_name}" 1>&2; fi
+  css=$(cat "themes/${template_name}/styles.css")
+
   # To get a list of unique senders
   # SELECT DISTINCT(COALESCE(json_extract(message_json, '$.mms.@address'), COALESCE(json_extract(message_json, '$.sms.@address'), ''))) as sender FROM messages;
   #sql_query="SELECT DISTINCT(COALESCE(json_extract(message_json, '\$.mms.@address'), COALESCE(json_extract(message_json, '\$.sms.@address'), ''))) as sender FROM messages;"
   sql_query="SELECT DISTINCT(sender) as sender FROM messages;"
-  while read sender; do
+  readarray -t senders < <(echo "${sql_query}" | sqlite3 "${database_file}")
+  for sender in "${senders[@]}"; do
     echo "Generating a view for sender ${sender}"
-  done < <(echo "${sql_query}" | sqlite3 "${database_file}")
+    sql_query="SELECT MIN(message_time) as max FROM messages;"
+    oldest=$(echo "${sql_query}" | sqlite3 "${database_file}")
+    sql_query="SELECT MAX(message_time) as max FROM messages;"
+    newest=$(echo "${sql_query}" | sqlite3 "${database_file}")
 
+    readarray -t months < <(generate_months $oldest $newest)
+    for month in "${months[@]}"; do
+      IFS="|" read -ra parts <<< "${month}"
+      local mname="${parts[2]}"
+      local mend="${parts[1]}"
+      local mstart="${parts[0]}"
+      echo "$mname"
+
+      export_file="export/${sender} - ${mname}.html"
+      #echo "<html><head><title>${sender} - ${mname}</title></head><body>" >"${export_file}"
+      cat "themes/${template_name}/header.html" | \
+        title="${sender} - ${mname}" \
+        css="${css}" \
+        envsubst >"${export_file}"
+
+      sql_query="SELECT message_time, REPLACE(REPLACE(message_json, X'0D', ''), X'0A', '') as message_json FROM messages WHERE ((sender = '$sender') AND (message_time >= $mstart) AND (message_time <= $mend)) ORDER BY message_time"
+      echo ${sql_query}
+      readarray -t messages < <(echo "${sql_query}" | sqlite3 "${database_file}")
+      for message in "${messages[@]}"; do
+        #echo "${message}"
+        IFS="|" read -ra parts <<< "${message}"
+        local message_json="${parts[1]}"
+        #echo "${message_json}" | jq -C
+        message_to_html "${message_json}" >>"${export_file}"
+      done
+
+      cat "themes/${template_name}/footer.html" | \
+        title="${sender} - ${mname}" \
+        css="${css}" \
+        envsubst >>"${export_file}"
+    done
+  done
+
+  echo "Generating time based views"
   sql_query="SELECT MIN(message_time) as max FROM messages;"
   oldest=$(echo "${sql_query}" | sqlite3 "${database_file}")
   sql_query="SELECT MAX(message_time) as max FROM messages;"
   newest=$(echo "${sql_query}" | sqlite3 "${database_file}")
-  # A lazy way to generate a list of months between the oldest known message and
-  #  the newest.  Start at the oldest date, add one day at a time and have the
-  #  "date" command report what month that was.  Then dedup the list.
-  for (( i=$oldest; i<=$newest; i+=3600 )); do
-    echo "$i "$(date --date="@${i}" "+%B %Y")
+  readarray -t months < <(generate_months $oldest $newest)
+  for month in "${months[@]}"; do
+    echo "${month}"
   done
 }
 
 case "${ns}" in
-  parse) parse ;;
+  parse) parse ${in_file};;
   generate_html) generate_html ;;
   config_set) config_set "${name}" "${value}" ;;
   config_get) config_get "${name}" ;;

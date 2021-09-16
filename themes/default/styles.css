@@ -1,0 +1,50 @@
+
+body {
+  background-color: #CCCCCC;
+}
+
+.message {
+  border-radius: 1em;
+  background-color: #EEEEEE;
+  max-width: 80%;
+  width: max-content;
+  margin: 1em;
+  padding: 0.25em;
+}
+
+.message_header {
+  margin-left: auto;
+  margin-right: 0;
+  padding: 0;
+  padding-left: 1em;
+  padding-right: 1em;
+  width: max-content;
+  font-size: small;
+  color: #AAAAAA;
+}
+
+.message_body {
+  padding: 0.3em;
+}
+
+.message_body>img {
+  width: 60%;
+  max-width: 25em;
+  max-height: 25em;
+}
+
+/* "type2" messages are messages sent rather than messages recieved */
+.message.type2 {
+  margin-left: auto;
+  margin-right: 0;
+  background-color: #9999FF;
+}
+
+.message_header.type2 {
+  font-size: small;
+  color: #6666DD;
+}
+
+.message_footer {
+  display: none;
+}
