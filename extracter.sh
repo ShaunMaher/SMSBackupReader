@@ -300,14 +300,15 @@ sql_query() {
 }
 
 generate_html () {
-  template_name=$(sql_query "SELECT value FROM config WHERE name = 'template_name' ORDER BY version DESC LIMIT 1;")
+  local template_name=$(sql_query "SELECT value FROM config WHERE name = 'template_name' ORDER BY version DESC LIMIT 1;")
   if [ "${template_name}" == "" ]; then
     echo "No template configured.  Using 'default' template." 1>&2
     template_name="default"
     sql_query "INSERT INTO config VALUES ("$(date +%s)", 'template_name', 'default');"
   fi
   if [ $output -gt 1 ]; then echo "Template Name: ${template_name}" 1>&2; fi
-  css=$(cat "themes/${template_name}/styles.css")
+  local css=$(cat "themes/${template_name}/styles.css")
+  local js=$(cat "themes/${template_name}/scripts.js")
 
   # To get a list of unique senders
   # SELECT DISTINCT(COALESCE(json_extract(message_json, '$.mms.@address'), COALESCE(json_extract(message_json, '$.sms.@address'), ''))) as sender FROM messages;
@@ -334,6 +335,7 @@ generate_html () {
       cat "themes/${template_name}/header.html" | \
         title="${sender} - ${mname}" \
         css="${css}" \
+        js="${js}" \
         envsubst >"${export_file}"
 
       sql_query="SELECT message_time, REPLACE(REPLACE(message_json, X'0D', ''), X'0A', '') as message_json FROM messages WHERE ((sender = '$sender') AND (message_time >= $mstart) AND (message_time <= $mend)) ORDER BY message_time"

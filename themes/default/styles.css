@@ -37,12 +37,25 @@ body {
 .message.type2 {
   margin-left: auto;
   margin-right: 0;
-  background-color: #9999FF;
+  background-color: #7799FF;
 }
 
 .message_header.type2 {
   font-size: small;
-  color: #6666DD;
+  color: #5566DD;
+}
+
+/* don't display these elements on sent items */
+.sender_friendly_name.type2 {
+  display: none;
+}
+
+.sender_number.type2 {
+  display: none;
+}
+
+.header_divider.type2 {
+  display: none;
 }
 
 .message_footer {

@@ -80,7 +80,9 @@ extracter.sh parse /path/to/file.xml
 ```
 
 ### Generating Static HTML files
-This isn't implemented yet.
+```
+extracter.sh generate html
+```
 
 ## Bash script?
 Yeah, it's not very portable, etc. but I hope that this project will be simple
