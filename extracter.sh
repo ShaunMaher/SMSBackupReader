@@ -352,19 +352,112 @@ generate_html () {
   local css=$(cat "themes/${template_name}/styles.css")
   local js=$(cat "themes/${template_name}/scripts.js")
 
-  # To get a list of unique senders
-  # SELECT DISTINCT(COALESCE(json_extract(message_json, '$.mms.@address'), COALESCE(json_extract(message_json, '$.sms.@address'), ''))) as sender FROM messages;
-  #sql_query="SELECT DISTINCT(COALESCE(json_extract(message_json, '\$.mms.@address'), COALESCE(json_extract(message_json, '\$.sms.@address'), ''))) as sender FROM messages;"
-  sql_query="SELECT DISTINCT(sender) as sender FROM messages;"
+  # Generate a page for each known contact
+  sql_query="SELECT DISTINCT(name) FROM contacts;"
+  readarray -t contacts < <(sql_query "${sql_query}")
+  for contact in "${contacts[@]}"; do
+    echo "Generating a view for contact ${contact}"
+
+    contacts_numbers_query=""
+    sql_query="SELECT DISTINCT(json_each.value) FROM contacts, json_each(contacts.value) WHERE name LIKE '${contact}';"
+    readarray -t contact_numbers < <(sql_query "${sql_query}")
+    for number in "${contact_numbers[@]}"; do
+      if [ ! "${contacts_numbers_query}" == "" ]; then
+        contacts_numbers_query="${contacts_numbers_query} OR "
+      fi
+      contacts_numbers_query="${contacts_numbers_query}({field_name} = '${number}')"
+    done
+    contacts_numbers_query="(${contacts_numbers_query=""})"
+
+    if [ $output -gt 4 ]; then echo "${contacts_numbers_query}"; fi
+
+    sql_query="SELECT MIN(message_time) as max FROM messages WHERE $(echo "${contacts_numbers_query}" | sed 's|{field_name}|sender|g');"
+    oldest=$(sql_query "${sql_query}")
+    sql_query="SELECT MAX(message_time) as max FROM messages WHERE $(echo "${contacts_numbers_query}" | sed 's|{field_name}|sender|g');"
+    newest=$(sql_query "${sql_query}")
+    if [ "${newest}" == "" ]; then
+      continue
+    fi
+
+    local sender_friendly_name="${contact}"
+
+    readarray -t months < <(generate_months $oldest $newest)
+    for month in "${months[@]}"; do
+      IFS="|" read -ra parts <<< "${month}"
+      local mname="${parts[2]}"
+      local mend="${parts[1]}"
+      local mstart="${parts[0]}"
+      echo "$mname"
+
+      export_file="export/${contact} - ${mname}.html"
+      #echo "<html><head><title>${sender} - ${mname}</title></head><body>" >"${export_file}"
+      cat "themes/${template_name}/header.html" | \
+        title="${sender} - ${mname}" \
+        css="${css}" \
+        js="${js}" \
+        envsubst >"${export_file}"
+
+      # On the pages that are dedicated to a single sender, we don't need to
+      #  display the sender details on every message.
+      echo '
+        <style>
+          .sender_friendly_name.type1 {
+            display: none;
+          }
+          .sender_number.type1 {
+            display: none;
+          }
+
+          .header_divider.type1 {
+            display: none;
+          }
+        </style>' >>"${export_file}"
+
+      # I've decided that I hate the dot.  If I change my mind later...
+      #echo "
+      #  <div class=\"page_heading h1\"><div class=\"contact_dot\">M</div>${sender_friendly_name} - <div class=\"page_heading right\">${mname}</div></div>" >>"${export_file}"
+
+      echo "
+        <div class=\"page_heading h1\"> ${sender_friendly_name} - ${mname}</div>" >>"${export_file}"
+
+      sql_query="SELECT message_time, REPLACE(REPLACE(message_json, X'0D', ''), X'0A', '') as message_json FROM messages WHERE ($(echo "${contacts_numbers_query}" | sed 's|{field_name}|sender|g') AND (message_time >= $mstart) AND (message_time <= $mend)) ORDER BY message_time"
+      readarray -t messages < <(sql_query "${sql_query}")
+      for message in "${messages[@]}"; do
+        #echo "${message}"
+        IFS="|" read -ra parts <<< "${message}"
+        local message_json="${parts[1]}"
+        #echo "${message_json}" | jq -C
+        message_to_html "${message_json}" "${sender_friendly_name}" >>"${export_file}"
+      done
+
+      cat "themes/${template_name}/footer.html" | \
+        title="${sender_friendly_name} - ${mname}" \
+        css="${css}" \
+        envsubst >>"${export_file}"
+
+      # At some future time, this value will be used to work out if the file needs
+      #  to be generated at all.  If there are no new message DB entries after this
+      #  date then the generated file would be the same as the existing one.
+      sql_insert="INSERT INTO state VALUES ("$(date +%s)", 'generated_file', '[ \"${contact}\", \"${mname}\" ]');"
+      sql_query "${sql_insert}"
+    done
+  done
+
+  # Generate pages for senders that have no contacts
+  sql_query="SELECT DISTINCT(sender) FROM messages WHERE sender NOT IN (SELECT DISTINCT(json_each.value) FROM contacts, json_each(contacts.value));"
   readarray -t senders < <(sql_query "${sql_query}")
   for sender in "${senders[@]}"; do
     echo "Generating a view for sender ${sender}"
-    sql_query="SELECT MIN(message_time) as max FROM messages;"
-    oldest=$(sql_query "${sql_query}")
-    sql_query="SELECT MAX(message_time) as max FROM messages;"
-    newest=$(sql_query "${sql_query}")
 
-    local sender_friendly_name="Contacts not yet implemented -"
+    sql_query="SELECT MIN(message_time) as max FROM messages WHERE sender = '${sender}'"
+    oldest=$(sql_query "${sql_query}")
+    sql_query="SELECT MAX(message_time) as max FROM messages WHERE sender = '${sender}'"
+    newest=$(sql_query "${sql_query}")
+    if [ "${newest}" == "" ]; then
+      continue
+    fi
+
+    local sender_friendly_name="${sender}"
 
     readarray -t months < <(generate_months $oldest $newest)
     for month in "${months[@]}"; do
@@ -398,10 +491,14 @@ generate_html () {
           }
         </style>' >>"${export_file}"
 
-      echo "
-        <div class=\"page_heading h1\"><div class=\"contact_dot\">M</div>${sender_friendly_name}<div class=\"page_heading right\">${mname}</div></div>" >>"${export_file}"
+      # I've decided that I hate the dot.  If I change my mind later...
+      #echo "
+      #  <div class=\"page_heading h1\"><div class=\"contact_dot\">M</div>${sender_friendly_name} - <div class=\"page_heading right\">${mname}</div></div>" >>"${export_file}"
 
-      sql_query="SELECT message_time, REPLACE(REPLACE(message_json, X'0D', ''), X'0A', '') as message_json FROM messages WHERE ((sender = '$sender') AND (message_time >= $mstart) AND (message_time <= $mend)) ORDER BY message_time"
+      echo "
+        <div class=\"page_heading h1\"> ${sender} - ${mname}</div>" >>"${export_file}"
+
+      sql_query="SELECT message_time, REPLACE(REPLACE(message_json, X'0D', ''), X'0A', '') as message_json FROM messages WHERE ((sender = '${sender}') AND (message_time >= $mstart) AND (message_time <= $mend)) ORDER BY message_time"
       readarray -t messages < <(sql_query "${sql_query}")
       for message in "${messages[@]}"; do
         #echo "${message}"
