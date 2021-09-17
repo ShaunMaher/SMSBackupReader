@@ -116,12 +116,44 @@ normalize_number () {
   echo "${return}"
 }
 
-parse () {
-  in_file_full=$(readlink -f "${1}")
-  in_file_name=$(basename "${in_file_full}")
+save_contact () {
+  local message_contact_name="${1}"
+  local orig_sender="${2}"
+  local sender="${3}"
+  if [ ! "${message_contact_name}" == "" ]; then
+    local sql_query="SELECT DISTINCT(name) FROM contacts, json_each(contacts.value) WHERE ((json_each.value LIKE '${orig_sender}') OR (json_each.value LIKE '${sender}'));"
+    contact_name=$(sql_query "${sql_query}")
+    if [ "${contact_name}" == "" ]; then
+      echo "No existing contact found for '${orig_sender}' or '${sender}'."
 
-  sql_count="SELECT COUNT(*) FROM state WHERE (name = 'parsed_file' AND value = '${in_file_full}');"
-  existing_count=$(echo "${sql_count}" | sqlite3 "${database_file}")
+      # Does a contact with this name already exist?
+      sql_count="SELECT COUNT(*) FROM contacts, json_each(contacts.value) WHERE name LIKE '${message_contact_name}';"
+      if [ $(sql_query "${sql_count}") -lt 1 ]; then
+        echo "No existing contact found for '${message_contact_name}'."
+        sql_query="INSERT INTO contacts VALUES("$(date +%s)", '${message_contact_name}', '[ \"${orig_sender}\", \"${sender}\" ]');"
+        sql_query "${sql_query}"
+      else
+        echo "An existing contact exists for '${message_contact_name}'.  This record will be updated with this new number."
+        sql_query="SELECT DISTINCT(json_each.value) FROM contacts, json_each(contacts.value) WHERE name LIKE 'Shaun';"
+        readarray -t numbers < <(sql_query "${sql_query}")
+        local number_array="[ "
+        for number in "${numbers[@]}"; do
+          number_array="${number_array} ${number}"
+        done
+        number_array="${number_array} ]"
+        sql_query="INSERT INTO contacts VALUES("$(date +%s)", '${message_contact_name}', '${number_array}')"
+        echo "${sql_query}"
+      fi
+    fi
+  fi
+}
+
+parse () {
+  local in_file_full=$(readlink -f "${1}")
+  local in_file_name=$(basename "${in_file_full}")
+
+  local sql_count="SELECT COUNT(*) FROM state WHERE (name = 'parsed_file' AND value = '${in_file_full}');"
+  local existing_count=$(echo "${sql_count}" | sqlite3 "${database_file}")
   if [ $existing_count -gt 0 ]; then
     if [ $force -eq 0 ]; then
       echo "Skipping '${in_file_name}' as it has been parsed previously.  Add '-f' to the command line to force re-parsing."
@@ -133,16 +165,20 @@ parse () {
   sms_count=$(cat "${in_file_full}" | xmlstarlet sel -t -v "count(/smses/sms)" 2>/dev/null)
   echo "Processing $sms_count SMS messages"
   for (( i=1; i<=$sms_count; i++ )); do
-    message=$(cat "${in_file_full}" | xmlstarlet sel -t -c "/smses/sms[$i]" 2>/dev/null)
-    safe_json=$(printf "${message}" | xq | sed "s/'/\&#39;/g")
-    message_date=$(echo "${safe_json}" | jq -r '.sms["@date"]' | awk '{print int($1/1000)}')
-    sender=$(echo "${safe_json}" | jq -r '.sms["@address"]')
-    sender=$(normalize_number "${sender}")
-    sql_insert="INSERT INTO messages VALUES (${message_date}, "$(date +%s)", '${sender}', '${safe_json}');"
+    local message=$(cat "${in_file_full}" | xmlstarlet sel -t -c "/smses/sms[$i]" 2>/dev/null)
+    local safe_json=$(printf "${message}" | xq | sed "s/'/\&#39;/g")
+    local message_date=$(echo "${safe_json}" | jq -r '.sms["@date"]' | awk '{print int($1/1000)}')
+    local message_contact_name=$(echo "${safe_json}" | jq -r '.sms["@contact_name"]' | grep -i -v "(Unknown)")
+    local orig_sender=$(echo "${safe_json}" | jq -r '.sms["@address"]')
+    local sender=$(normalize_number "${orig_sender}")
+
+    save_contact "${message_contact_name}" "${orig_sender}" "${sender}"
+
+    if [ $output -gt 4 ]; then echo "${safe_json}" | jq -C '.'; fi
     sql_count="SELECT COUNT(*) FROM messages WHERE HEX(SHA3(message_json)) = HEX(SHA3('${safe_json}'))"
-    existing_count=$(echo "${sql_count}" | sqlite3 "${database_file}")
-    if [ $existing_count -lt 1 ]; then
-      echo "${sql_insert}" | sqlite3 "${database_file}"
+    if [ $(sql_query "${sql_count}") -lt 1 ]; then
+      sql_insert="INSERT INTO messages VALUES (${message_date}, "$(date +%s)", '${sender}', '${safe_json}');"
+      sql_query "${sql_insert}"
     else
       echo "  Not inserting duplicate message into database"
     fi
@@ -169,14 +205,19 @@ parse () {
         xq | \
         sed "s/'/\&#39;/g"
       )
-      message_date=$(echo "${safe_json}" | jq -r '.mms["@date"]' | awk '{print int($1/1000)}')
-      sender=$(echo "${safe_json}" | jq -r '.mms["@address"]')
-      sender=$(normalize_number "${sender}")
+
+      if [ $output -gt 4 ]; then echo "${safe_json}" | jq -C '.'; fi
+      local message_date=$(echo "${safe_json}" | jq -r '.mms["@date"]' | awk '{print int($1/1000)}')
+      local orig_sender=$(echo "${safe_json}" | jq -r '.mms["@address"]')
+      local sender=$(normalize_number "${orig_sender}")
+      local message_contact_name=$(echo "${safe_json}" | jq -r '.mms["@contact_name"]' | grep -i -v "(Unknown)")
+
+      save_contact "${message_contact_name}" "${orig_sender}" "${sender}"
+
       sql_count="SELECT COUNT(*) FROM messages WHERE HEX(SHA3(message_json)) = HEX(SHA3('${safe_json}'))"
-      sql_insert="INSERT INTO messages VALUES (${message_date}, "$(date +%s)", '${sender}', '${safe_json}');"
-      existing_count=$(echo "${sql_count}" | sqlite3 "${database_file}")
-      if [ $existing_count -lt 1 ]; then
-        echo "${sql_insert}" | sqlite3 "${database_file}"
+      if [ $(sql_query "${sql_count}") -lt 1 ]; then
+        sql_insert="INSERT INTO messages VALUES (${message_date}, "$(date +%s)", '${sender}', '${safe_json}');"
+        sql_query "${sql_insert}"
       else
         echo "  Not inserting duplicate message into database"
       fi
@@ -235,16 +276,18 @@ generate_months () {
 
 message_to_html () {
   local message_json="${1}"
+  local sender_friendly_name="${2}"
   local type=$(echo "${message_json}" | jq -r 'keys_unsorted[]')
   case $type in
-    "mms") return=$(mms_to_html "${message_json}") ;;
-    "sms") return=$(sms_to_html "${message_json}") ;;
+    "mms") return=$(mms_to_html "${message_json}" "${sender_friendly_name}") ;;
+    "sms") return=$(sms_to_html "${message_json}" "${sender_friendly_name}") ;;
   esac
   echo "${return}"
 }
 
 mms_to_html () {
   local message_json="${1}"
+  local sender_friendly_name="${2}"
   local message_date=$(date --date="@$(echo "${message_json}" | jq -r '.mms["@date"]' | awk '{print int($1/1000)}')")
   local message_body=$(echo "${message_json}" | jq -r '.mms.parts[] | map(select(.["@ct"] | match("text/plain"))) | map(.["@text"]) | .[]')
   readarray -t images < <(echo "${message_json}" | jq -r '.mms.parts[] | map(select(.["@ct"] | match("image/jpeg"))) | map(.["@data"]) | .[]')
@@ -252,7 +295,6 @@ mms_to_html () {
     if [ ! "${message_body}" == "" ]; then message_body="${message_body}<br/>"; fi
     message_body="${message_body}<img src=\"../example-data/attachments/${image}\"/><br/>"
   done
-  local sender_friendly_name="MMS: Contacts not yet implemented"
   local sender_number=$(normalize_number $(echo "${message_json}" | jq -r '.sms["@address"]'))
 
   #echo "<div class=\"message\"><div class=\"message_header\">SMS: ${message_date}</div><div class=\"message_body\">" >>"${export_file}"
@@ -271,10 +313,10 @@ mms_to_html () {
 
 sms_to_html () {
   local message_json="${1}"
+  local sender_friendly_name="${2}"
   local message_date=$(date --date="@$(echo "${message_json}" | jq -r '.sms["@date"]' | awk '{print int($1/1000)}')")
   local message_body=$(echo "${message_json}" | jq -r '.sms["@body"]' | awk '{print $0"<br/>"}')
   local message_type="type"$(echo "${message_json}" | jq -r '.sms["@type"]')
-  local sender_friendly_name="SMS: Contacts not yet implemented"
   local sender_number=$(normalize_number $(echo "${message_json}" | jq -r '.sms["@address"]'))
 
   #echo "<div class=\"message\"><div class=\"message_header\">SMS: ${message_date}</div><div class=\"message_body\">" >>"${export_file}"
@@ -314,13 +356,15 @@ generate_html () {
   # SELECT DISTINCT(COALESCE(json_extract(message_json, '$.mms.@address'), COALESCE(json_extract(message_json, '$.sms.@address'), ''))) as sender FROM messages;
   #sql_query="SELECT DISTINCT(COALESCE(json_extract(message_json, '\$.mms.@address'), COALESCE(json_extract(message_json, '\$.sms.@address'), ''))) as sender FROM messages;"
   sql_query="SELECT DISTINCT(sender) as sender FROM messages;"
-  readarray -t senders < <(echo "${sql_query}" | sqlite3 "${database_file}")
+  readarray -t senders < <(sql_query "${sql_query}")
   for sender in "${senders[@]}"; do
     echo "Generating a view for sender ${sender}"
     sql_query="SELECT MIN(message_time) as max FROM messages;"
-    oldest=$(echo "${sql_query}" | sqlite3 "${database_file}")
+    oldest=$(sql_query "${sql_query}")
     sql_query="SELECT MAX(message_time) as max FROM messages;"
-    newest=$(echo "${sql_query}" | sqlite3 "${database_file}")
+    newest=$(sql_query "${sql_query}")
+
+    local sender_friendly_name="Contacts not yet implemented -"
 
     readarray -t months < <(generate_months $oldest $newest)
     for month in "${months[@]}"; do
@@ -338,29 +382,53 @@ generate_html () {
         js="${js}" \
         envsubst >"${export_file}"
 
+      # On the pages that are dedicated to a single sender, we don't need to
+      #  display the sender details on every message.
+      echo '
+        <style>
+          .sender_friendly_name.type1 {
+            display: none;
+          }
+          .sender_number.type1 {
+            display: none;
+          }
+
+          .header_divider.type1 {
+            display: none;
+          }
+        </style>' >>"${export_file}"
+
+      echo "
+        <div class=\"page_heading h1\"><div class=\"contact_dot\">M</div>${sender_friendly_name}<div class=\"page_heading right\">${mname}</div></div>" >>"${export_file}"
+
       sql_query="SELECT message_time, REPLACE(REPLACE(message_json, X'0D', ''), X'0A', '') as message_json FROM messages WHERE ((sender = '$sender') AND (message_time >= $mstart) AND (message_time <= $mend)) ORDER BY message_time"
-      echo ${sql_query}
-      readarray -t messages < <(echo "${sql_query}" | sqlite3 "${database_file}")
+      readarray -t messages < <(sql_query "${sql_query}")
       for message in "${messages[@]}"; do
         #echo "${message}"
         IFS="|" read -ra parts <<< "${message}"
         local message_json="${parts[1]}"
         #echo "${message_json}" | jq -C
-        message_to_html "${message_json}" >>"${export_file}"
+        message_to_html "${message_json}" "${sender_friendly_name}" >>"${export_file}"
       done
 
       cat "themes/${template_name}/footer.html" | \
         title="${sender} - ${mname}" \
         css="${css}" \
         envsubst >>"${export_file}"
+
+      # At some future time, this value will be used to work out if the file needs
+      #  to be generated at all.  If there are no new message DB entries after this
+      #  date then the generated file would be the same as the existing one.
+      sql_insert="INSERT INTO state VALUES ("$(date +%s)", 'generated_file', '[ \"${sender}\", \"${mname}\" ]');"
+      sql_query "${sql_insert}"
     done
   done
 
   echo "Generating time based views"
   sql_query="SELECT MIN(message_time) as max FROM messages;"
-  oldest=$(echo "${sql_query}" | sqlite3 "${database_file}")
+  oldest=$(sql_query "${sql_query}")
   sql_query="SELECT MAX(message_time) as max FROM messages;"
-  newest=$(echo "${sql_query}" | sqlite3 "${database_file}")
+  newest=$(sql_query "${sql_query}")
   readarray -t months < <(generate_months $oldest $newest)
   for month in "${months[@]}"; do
     echo "${month}"
